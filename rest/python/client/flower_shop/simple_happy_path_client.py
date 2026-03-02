@@ -788,18 +788,20 @@ Note:
 
     logger.info("\nSTEP 7: Processing Payment...")
 
-    # We use the 'mock_payment_handler' discovered in Step 0.
+    # Use the first payment handler discovered in Step 0.
 
     # In a real app, you'd match a handler ID (e.g. 'gpay') to your client
 
     # logic.
 
-    target_handler = "mock_payment_handler"
-
-    if not any(h["id"] == target_handler for h in supported_handlers):
-      logger.error("Merchant does not support %s. Aborting.", target_handler)
+    if not supported_handlers:
+      logger.error("Merchant does not support any payment handlers. Aborting.")
 
       return
+
+    target_handler = supported_handlers[0]["id"]
+
+    logger.info("Using payment handler: %s", target_handler)
 
     # Create Payment Data (Single Instrument) using strong types
 

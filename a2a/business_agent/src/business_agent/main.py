@@ -78,8 +78,16 @@ async def run(host, port):
         port: The port to listen on.
 
     """
-    if not os.getenv("GOOGLE_API_KEY"):
-        logger.error("GOOGLE_API_KEY must be set")
+    has_api_key = os.getenv("GOOGLE_API_KEY")
+    has_vertex = (
+        os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
+        and os.getenv("GOOGLE_CLOUD_PROJECT")
+    )
+    if not has_api_key and not has_vertex:
+        logger.error(
+            "Set GOOGLE_API_KEY, or set GOOGLE_GENAI_USE_VERTEXAI=TRUE"
+            " with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION"
+        )
         exit(1)
 
     base_path = Path(__file__).parent

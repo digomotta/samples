@@ -4,3 +4,16 @@
 uv.lock
 .venv
 **/node_modules
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Database runtime files (keep seed .db files tracked)
+*.db-shm
+*.db-wal
+
+
+CLAUDE.md
+UCP_EXPLAINED.md

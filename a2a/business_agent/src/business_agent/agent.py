@@ -48,6 +48,30 @@ def _create_error_response(message: str) -> dict:
     return {"message": message, "status": "error"}
 
 
+def browse_catalog(tool_context: ToolContext) -> dict:
+    """List all available products with names, IDs, and prices. Use when the user asks what is available, what you sell, or wants to see all products.
+
+    Args:
+        tool_context: The tool context for the current request.
+
+    Returns:
+        dict: A compact list of all products.
+
+    """
+    return {
+        "products": [
+            {
+                "id": p.product_id,
+                "name": p.name,
+                "price": p.offers.price,
+                "currency": p.offers.price_currency,
+            }
+            for p in store._products.values()
+            if p.offers
+        ]
+    }
+
+
 def search_shopping_catalog(tool_context: ToolContext, query: str) -> dict:
     """Search the product catalog for products that match the given query.
 
@@ -423,7 +447,7 @@ def modify_output_after_agent(
 
 root_agent = Agent(
     name="shopper_agent",
-    model="gemini-3-flash-preview",
+    model="gemini-2.5-flash",
     description="Agent to help with shopping",
     instruction=(
         "You are a helpful agent who can help user with shopping actions such"
@@ -440,6 +464,7 @@ root_agent = Agent(
         " products to match the user request"
     ),
     tools=[
+        browse_catalog,
         search_shopping_catalog,
         add_to_checkout,
         remove_from_checkout,
