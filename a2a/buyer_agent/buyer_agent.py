@@ -2,8 +2,13 @@
 
 Sends A2A JSON-RPC messages to a seller agent and completes a full
 purchase autonomously: search -> add to cart -> shipping -> payment -> done.
+
+Can run as a CLI tool or as an HTTP server with SSE for real-time
+frontend integration.
 """
 
+import asyncio
+import json
 import logging
 import re
 import threading
@@ -27,7 +32,7 @@ UCP_EXTENSION_URL = "https://ucp.dev/specification/reference?v=2026-01-11"
 PROFILE_DIR = Path(__file__).parent / "profile"
 
 
-# ── Profile server ───────────────────────────────────────────────────────────
+# -- Profile server -----------------------------------------------------------
 
 
 def _start_profile_server() -> int:
@@ -40,7 +45,47 @@ def _start_profile_server() -> int:
     return port
 
 
-# ── A2A JSON-RPC ─────────────────────────────────────────────────────────────
+# -- A2A JSON-RPC -------------------------------------------------------------
+
+
+async def _send_async(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    profile_url: str,
+    parts: list[dict],
+    context_id: str | None,
+    task_id: str | None,
+) -> dict:
+    """Send an A2A message/send JSON-RPC request (async)."""
+    msg: dict = {
+        "role": "user",
+        "parts": parts,
+        "messageId": str(uuid.uuid4()),
+        "kind": "message",
+    }
+    if context_id:
+        msg["contextId"] = context_id
+    if task_id:
+        msg["taskId"] = task_id
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": str(uuid.uuid4()),
+        "method": "message/send",
+        "params": {"message": msg, "configuration": {"historyLength": 0}},
+    }
+    resp = await client.post(
+        endpoint,
+        json=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-A2A-Extensions": UCP_EXTENSION_URL,
+            "UCP-Agent": f'profile="{profile_url}"',
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _send(
@@ -51,7 +96,7 @@ def _send(
     context_id: str | None,
     task_id: str | None,
 ) -> dict:
-    """Send an A2A message/send JSON-RPC request."""
+    """Send an A2A message/send JSON-RPC request (sync)."""
     msg: dict = {
         "role": "user",
         "parts": parts,
@@ -83,7 +128,7 @@ def _send(
     return resp.json()
 
 
-# ── Response parsing ─────────────────────────────────────────────────────────
+# -- Response parsing ---------------------------------------------------------
 
 
 def _parse(data: dict) -> dict:
@@ -154,7 +199,7 @@ def _parse(data: dict) -> dict:
     }
 
 
-# ── Payment ──────────────────────────────────────────────────────────────────
+# -- Payment ------------------------------------------------------------------
 
 
 def _payment_parts(checkout: dict) -> list[dict]:
@@ -186,7 +231,7 @@ def _payment_parts(checkout: dict) -> list[dict]:
     ]
 
 
-# ── State machine ────────────────────────────────────────────────────────────
+# -- State machine ------------------------------------------------------------
 
 SHIPPING = (
     "My delivery details: first name John, last name Doe, "
@@ -201,45 +246,261 @@ def _extract_product_ids(text: str) -> list[str]:
 
 
 def _next_message(parsed: dict, goal: str) -> str | None:
-    """Decide the next buyer message based on the current state.
-
-    Returns None when the flow is complete or payment should be sent.
-    """
+    """Decide the next buyer message based on the current state."""
     status = parsed["checkout_status"]
 
-    # Got structured products but no checkout yet → add first product
     if parsed["products"] and not parsed["checkout"]:
         pid = parsed["products"][0].get("productID", "BISC-001")
         return f"Add product {pid} to my checkout"
 
-    # No structured products, but text mentions product IDs → add first one
     if not parsed["checkout"]:
         ids = _extract_product_ids(parsed["text"])
         if ids:
             return f"Add product {ids[0]} to my checkout"
 
-    # Checkout exists and is incomplete → provide shipping details
     if status == "incomplete":
         items = parsed["checkout"].get("line_items", [])
         if items:
             return SHIPPING
         return None
 
-    # ready_for_complete or completed → handled by caller
     return None
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# -- Buyer Session (async, for HTTP server) -----------------------------------
+
+
+class BuyerSession:
+    """Manages an autonomous buyer agent session with SSE streaming."""
+
+    def __init__(self, goal: str, seller_url: str, profile_url: str):
+        self.goal = goal
+        self.seller_url = seller_url
+        self.profile_url = profile_url
+        self._intervention_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._paused = asyncio.Event()
+        self._paused.set()  # not paused initially
+        self._stopped = False
+        self.context_id: str | None = None
+        self.task_id: str | None = None
+        self.last_checkout: dict | None = None
+
+    def pause(self):
+        self._paused.clear()
+
+    def resume(self):
+        self._paused.set()
+
+    def stop(self):
+        self._stopped = True
+        self._paused.set()  # unblock if paused
+
+    def intervene(self, message: str):
+        self._intervention_queue.put_nowait(message)
+        # If paused, resume to process the intervention
+        self._paused.set()
+
+    async def run(self):
+        """Async generator yielding events for each turn."""
+        async with httpx.AsyncClient() as client:
+            buyer_text: str | None = self.goal
+
+            for turn in range(20):
+                # Check if paused
+                await self._paused.wait()
+                if self._stopped:
+                    yield {"type": "status", "turn": turn, "text": "Session stopped."}
+                    break
+
+                # Check for human intervention
+                try:
+                    intervention = self._intervention_queue.get_nowait()
+                    buyer_text = intervention
+                    yield {
+                        "type": "human_intervention",
+                        "turn": turn,
+                        "text": intervention,
+                    }
+                except asyncio.QueueEmpty:
+                    pass
+
+                if buyer_text is None:
+                    yield {"type": "status", "turn": turn, "text": "No next action. Stopping."}
+                    break
+
+                # Emit buyer message event
+                yield {"type": "buyer_message", "turn": turn, "text": buyer_text}
+
+                # Send to seller
+                parts = [{"type": "text", "text": buyer_text}]
+                try:
+                    resp = await _send_async(
+                        client, self.seller_url, self.profile_url,
+                        parts, self.context_id, self.task_id,
+                    )
+                except Exception as e:
+                    yield {"type": "error", "turn": turn, "text": str(e)}
+                    break
+
+                parsed = _parse(resp)
+                self.context_id = parsed["context_id"] or self.context_id
+                self.task_id = parsed["task_id"]
+                if parsed["checkout"]:
+                    self.last_checkout = parsed["checkout"]
+
+                yield {
+                    "type": "seller_response",
+                    "turn": turn,
+                    "text": parsed["text"],
+                    "parsed": parsed,
+                }
+
+                # Done?
+                if parsed["checkout_status"] == "completed":
+                    yield {"type": "status", "turn": turn, "text": "Order completed successfully!"}
+                    break
+
+                # Checkout ready -> send payment
+                if parsed["checkout_status"] == "ready_for_complete" and self.last_checkout:
+                    yield {"type": "buyer_message", "turn": turn, "text": "Sending payment..."}
+
+                    pay_parts = _payment_parts(self.last_checkout)
+                    try:
+                        resp = await _send_async(
+                            client, self.seller_url, self.profile_url,
+                            pay_parts, self.context_id, self.task_id,
+                        )
+                    except Exception as e:
+                        yield {"type": "error", "turn": turn, "text": str(e)}
+                        break
+
+                    parsed = _parse(resp)
+                    self.context_id = parsed["context_id"] or self.context_id
+
+                    yield {
+                        "type": "seller_response",
+                        "turn": turn,
+                        "text": parsed["text"],
+                        "parsed": parsed,
+                    }
+
+                    if parsed["checkout_status"] == "completed":
+                        yield {"type": "status", "turn": turn, "text": "Order completed successfully!"}
+                    else:
+                        yield {"type": "status", "turn": turn, "text": f"Payment result: {parsed['checkout_status']}"}
+                    break
+
+                # Decide next message
+                buyer_text = _next_message(parsed, self.goal)
+            else:
+                yield {"type": "status", "turn": 20, "text": "Reached max turns without completing purchase."}
+
+
+# -- HTTP Server (Starlette + SSE) -------------------------------------------
+
+_sessions: dict[str, BuyerSession] = {}
+
+
+def create_app(profile_url: str):
+    """Create a Starlette ASGI app for the buyer agent."""
+    from starlette.applications import Starlette
+    from starlette.middleware.cors import CORSMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from sse_starlette.sse import EventSourceResponse
+
+    async def start_session(request: Request):
+        body = await request.json()
+        goal = body.get("goal", "buy some cookies")
+        seller_url = body.get("seller_url", "http://localhost:10999")
+        session_id = str(uuid.uuid4())
+        session = BuyerSession(goal, seller_url, profile_url)
+        _sessions[session_id] = session
+        return JSONResponse({"session_id": session_id})
+
+    async def events(request: Request):
+        session_id = request.path_params["session_id"]
+        session = _sessions.get(session_id)
+        if not session:
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+
+        async def event_generator():
+            async for event in session.run():
+                yield {
+                    "event": event["type"],
+                    "data": json.dumps(event),
+                }
+            # Clean up after session completes
+            _sessions.pop(session_id, None)
+
+        return EventSourceResponse(event_generator())
+
+    async def intervene(request: Request):
+        session_id = request.path_params["session_id"]
+        session = _sessions.get(session_id)
+        if not session:
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+        body = await request.json()
+        message = body.get("message", "")
+        session.intervene(message)
+        return JSONResponse({"ok": True})
+
+    async def pause_session(request: Request):
+        session_id = request.path_params["session_id"]
+        session = _sessions.get(session_id)
+        if not session:
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+        session.pause()
+        return JSONResponse({"ok": True, "paused": True})
+
+    async def resume_session(request: Request):
+        session_id = request.path_params["session_id"]
+        session = _sessions.get(session_id)
+        if not session:
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+        session.resume()
+        return JSONResponse({"ok": True, "paused": False})
+
+    routes = [
+        Route("/start", start_session, methods=["POST"]),
+        Route("/events/{session_id}", events),
+        Route("/intervene/{session_id}", intervene, methods=["POST"]),
+        Route("/pause/{session_id}", pause_session, methods=["POST"]),
+        Route("/resume/{session_id}", resume_session, methods=["POST"]),
+    ]
+
+    app = Starlette(routes=routes)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    return app
+
+
+# -- CLI entry points ---------------------------------------------------------
 
 
 @click.command()
 @click.option("--seller-url", default="http://localhost:10999", help="Seller agent URL")
 @click.option("--goal", default="buy some cookies", help="What to shop for")
-def main(seller_url: str, goal: str):
+@click.option("--serve", is_flag=True, default=False, help="Run as HTTP server with SSE")
+@click.option("--port", default=11000, help="HTTP server port (with --serve)")
+def main(seller_url: str, goal: str, serve: bool, port: int):
     """Run the autonomous buyer agent."""
     profile_port = _start_profile_server()
     profile_url = f"http://127.0.0.1:{profile_port}/agent_profile.json"
 
+    if serve:
+        import uvicorn
+        app = create_app(profile_url)
+        log.info("Buyer agent server starting on port %d", port)
+        uvicorn.run(app, host="0.0.0.0", port=port)
+        return
+
+    # Original CLI mode
     http = httpx.Client()
     context_id: str | None = None
     task_id: str | None = None
@@ -275,7 +536,7 @@ def main(seller_url: str, goal: str):
             print("Order completed successfully!")
             break
 
-        # Checkout ready → send payment
+        # Checkout ready -> send payment
         if parsed["checkout_status"] == "ready_for_complete" and last_checkout:
             print("[Buyer]  Sending payment...\n")
             pay_parts = _payment_parts(last_checkout)

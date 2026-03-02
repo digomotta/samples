@@ -42,3 +42,9 @@ export const appConfig = new AppProperties(
   "Hello, I am your Business Agent. How can I help you?",
   "Shop with Business Agent",
 );
+
+export const buyerAgentConfig = {
+  baseUrl: "/buyer-agent",
+  defaultGoal: "buy some cookies",
+  defaultSellerUrl: "http://localhost:10999",
+};

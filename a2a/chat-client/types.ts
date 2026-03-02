@@ -18,6 +18,18 @@ export enum Sender {
   MODEL = "model",
 }
 
+export enum AppMode {
+  HUMAN_CHAT = "human_chat",
+  BUYER_AGENT = "buyer_agent",
+}
+
+export enum AgentSender {
+  BUYER_AGENT = "buyer_agent",
+  SELLER_AGENT = "seller_agent",
+  HUMAN = "human",
+  SYSTEM = "system",
+}
+
 export interface Product {
   productID: string;
   name: string;
@@ -65,6 +77,22 @@ export interface ChatMessage {
   isUserAction?: boolean;
   checkout?: Checkout;
   paymentInstrument?: PaymentInstrument;
+  agentSender?: AgentSender;
+  turn?: number;
+}
+
+export interface BuyerAgentEvent {
+  type: "buyer_message" | "seller_response" | "human_intervention" | "status" | "error";
+  turn: number;
+  text: string;
+  parsed?: {
+    context_id: string | null;
+    task_id: string | null;
+    checkout: Checkout | null;
+    checkout_status: string | null;
+    products: Product[];
+    text: string;
+  };
 }
 
 export interface CheckoutTotal {

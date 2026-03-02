@@ -13,20 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import AgentControls from "./components/AgentControls";
 import ChatInput from "./components/ChatInput";
 import ChatMessageComponent from "./components/ChatMessage";
 import Header from "./components/Header";
 import { appConfig } from "./config";
+import { useBuyerAgent } from "./hooks/useBuyerAgent";
 import { CredentialProviderProxy } from "./mocks/credentialProviderProxy";
 
 import {
+  AgentSender,
+  AppMode,
+  type BuyerAgentEvent,
   type ChatMessage,
+  type Checkout,
+  type PaymentHandler,
   type PaymentInstrument,
   type Product,
   Sender,
-  type Checkout,
-  type PaymentHandler,
 } from "./types";
 
 type RequestPart =
@@ -52,6 +57,12 @@ const initialMessage: ChatMessage = createChatMessage(
   { id: "initial" },
 );
 
+const agentInitialMessage: ChatMessage = createChatMessage(
+  Sender.MODEL,
+  "Agent-to-Agent mode. Set a goal and click Start Agent to begin the autonomous buyer flow.",
+  { id: "agent-initial", agentSender: AgentSender.SYSTEM },
+);
+
 /**
  * An example A2A chat client that demonstrates consuming a business's A2A Agent with UCP Extension.
  * Only for demo purposes, not intended for production use.
@@ -64,8 +75,59 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [contextId, setContextId] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [mode, setMode] = useState<AppMode>(AppMode.HUMAN_CHAT);
   const credentialProvider = useRef(new CredentialProviderProxy());
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleBuyerAgentEvent = useCallback((event: BuyerAgentEvent) => {
+    if (event.type === "buyer_message") {
+      const msg = createChatMessage(Sender.USER, event.text, {
+        agentSender: AgentSender.BUYER_AGENT,
+        turn: event.turn,
+      });
+      setMessages((prev) => [...prev, msg]);
+    } else if (event.type === "seller_response") {
+      const msg = createChatMessage(Sender.MODEL, "", {
+        agentSender: AgentSender.SELLER_AGENT,
+        turn: event.turn,
+      });
+
+      // Parse structured data from the event
+      if (event.parsed) {
+        msg.text = event.parsed.text;
+        if (event.parsed.products && event.parsed.products.length > 0) {
+          msg.products = event.parsed.products;
+        }
+        if (event.parsed.checkout) {
+          msg.checkout = event.parsed.checkout;
+        }
+      } else {
+        msg.text = event.text;
+      }
+
+      setMessages((prev) => [...prev, msg]);
+    } else if (event.type === "human_intervention") {
+      const msg = createChatMessage(Sender.USER, event.text, {
+        agentSender: AgentSender.HUMAN,
+        turn: event.turn,
+      });
+      setMessages((prev) => [...prev, msg]);
+    } else if (event.type === "status") {
+      const msg = createChatMessage(Sender.MODEL, event.text, {
+        agentSender: AgentSender.SYSTEM,
+        turn: event.turn,
+      });
+      setMessages((prev) => [...prev, msg]);
+    } else if (event.type === "error") {
+      const msg = createChatMessage(Sender.MODEL, `Error: ${event.text}`, {
+        agentSender: AgentSender.SYSTEM,
+        turn: event.turn,
+      });
+      setMessages((prev) => [...prev, msg]);
+    }
+  }, []);
+
+  const buyerAgent = useBuyerAgent({ onEvent: handleBuyerAgentEvent });
 
   // Scroll to the bottom when new messages are added
   // biome-ignore lint/correctness/useExhaustiveDependencies: Scroll when messages change
@@ -75,6 +137,17 @@ function App() {
         chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const handleModeChange = (newMode: AppMode) => {
+    setMode(newMode);
+    if (newMode === AppMode.BUYER_AGENT) {
+      setMessages([agentInitialMessage]);
+    } else {
+      setMessages([initialMessage]);
+    }
+    setContextId(null);
+    setTaskId(null);
+  };
 
   const handleAddToCheckout = (productToAdd: Product) => {
     const actionPayload = JSON.stringify({
@@ -379,7 +452,13 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen max-h-screen bg-white font-sans">
-      <Header logoUrl={appConfig.logoUrl} title={appConfig.name} />
+      <Header
+        logoUrl={appConfig.logoUrl}
+        title={appConfig.titleText}
+        mode={mode}
+        onModeChange={handleModeChange}
+        isModeChangeDisabled={buyerAgent.isRunning}
+      />
       <main
         ref={chatContainerRef}
         className="flex-grow overflow-y-auto p-4 md:p-6 space-y-2"
@@ -405,7 +484,19 @@ function App() {
           ></ChatMessageComponent>
         ))}
       </main>
-      <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
+      {mode === AppMode.HUMAN_CHAT ? (
+        <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
+      ) : (
+        <AgentControls
+          isRunning={buyerAgent.isRunning}
+          isPaused={buyerAgent.isPaused}
+          onStart={(goal) => buyerAgent.startSession(goal)}
+          onPause={() => buyerAgent.pause()}
+          onResume={() => buyerAgent.resume()}
+          onStop={() => buyerAgent.stop()}
+          onIntervene={(msg) => buyerAgent.intervene(msg)}
+        />
+      )}
     </div>
   );
 }
