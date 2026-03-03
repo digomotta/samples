@@ -44,6 +44,7 @@ export function useBuyerAgent({ onEvent }: UseBuyerAgentOptions) {
       es.addEventListener("human_intervention", handleEvent);
       es.addEventListener("status", handleEvent);
       es.addEventListener("error", handleEvent);
+      es.addEventListener("buyer_report", handleEvent);
 
       es.onerror = () => {
         // SSE connection closed (session ended)

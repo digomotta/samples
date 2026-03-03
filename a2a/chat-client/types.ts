@@ -82,7 +82,7 @@ export interface ChatMessage {
 }
 
 export interface BuyerAgentEvent {
-  type: "buyer_message" | "seller_response" | "human_intervention" | "status" | "error";
+  type: "buyer_message" | "seller_response" | "human_intervention" | "status" | "error" | "buyer_report";
   turn: number;
   text: string;
   parsed?: {

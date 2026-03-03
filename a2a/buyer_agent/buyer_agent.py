@@ -368,6 +368,91 @@ def _llm_next_message_sync(
   return text
 
 
+REPORT_SYSTEM_PROMPT = """\
+You are a buyer agent reporting back to the user who asked you to \
+buy something. Given the full conversation between you and the \
+seller, write a short, friendly summary for the user.
+
+Include:
+- What you bought (product name, quantity, price)
+- Total cost (including shipping and tax if available)
+- Order ID if the purchase was completed
+- If the purchase failed, explain what went wrong
+
+Keep it concise — 2-4 sentences. No markdown formatting.
+"""
+
+
+async def _generate_report(
+  history: list[dict], goal: str,
+) -> str:
+  """Generate a user-facing summary of what happened."""
+  client = _get_genai_client()
+  contents: list[genai_types.Content] = []
+  for entry in history:
+    role = "model" if entry["role"] == "buyer" else "user"
+    contents.append(
+      genai_types.Content(
+        role=role,
+        parts=[genai_types.Part(text=entry["text"])],
+      )
+    )
+  contents.append(
+    genai_types.Content(
+      role="user",
+      parts=[genai_types.Part(
+        text="The session is over. Summarize what happened for me.",
+      )],
+    )
+  )
+  response = await client.aio.models.generate_content(
+    model="gemini-2.5-flash",
+    contents=contents,
+    config=genai_types.GenerateContentConfig(
+      system_instruction=(
+        f"{REPORT_SYSTEM_PROMPT}\n\nUser's original request: {goal}"
+      ),
+      temperature=0.3,
+    ),
+  )
+  return (response.text or "No summary available.").strip()
+
+
+def _generate_report_sync(
+  history: list[dict], goal: str,
+) -> str:
+  """Generate a user-facing summary of what happened (sync)."""
+  client = _get_genai_client()
+  contents: list[genai_types.Content] = []
+  for entry in history:
+    role = "model" if entry["role"] == "buyer" else "user"
+    contents.append(
+      genai_types.Content(
+        role=role,
+        parts=[genai_types.Part(text=entry["text"])],
+      )
+    )
+  contents.append(
+    genai_types.Content(
+      role="user",
+      parts=[genai_types.Part(
+        text="The session is over. Summarize what happened for me.",
+      )],
+    )
+  )
+  response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents=contents,
+    config=genai_types.GenerateContentConfig(
+      system_instruction=(
+        f"{REPORT_SYSTEM_PROMPT}\n\nUser's original request: {goal}"
+      ),
+      temperature=0.3,
+    ),
+  )
+  return (response.text or "No summary available.").strip()
+
+
 # -- Buyer Session (async, for HTTP server) -----------------------------------
 
 
@@ -557,6 +642,13 @@ class BuyerSession:
                     break
             else:
                 yield {"type": "status", "turn": 20, "text": "Reached max turns without completing purchase."}
+
+            # Generate a final report for the user
+            if self.history:
+                report = await _generate_report(
+                    self.history, self.goal,
+                )
+                yield {"type": "buyer_report", "turn": -1, "text": report}
 
 
 # -- HTTP Server (Starlette + SSE) -------------------------------------------
@@ -750,6 +842,14 @@ def main(seller_url: str, goal: str, serve: bool, port: int):
 
     else:
         print("Reached max turns without completing purchase.")
+
+    # Final report for the user
+    if history:
+        report = _generate_report_sync(history, goal)
+        print(f"\n{'='*60}")
+        print(f"  Report")
+        print(f"{'='*60}")
+        print(f"[Agent]  {report}\n")
 
 
 if __name__ == "__main__":

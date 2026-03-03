@@ -118,6 +118,12 @@ function App() {
         turn: event.turn,
       });
       setMessages((prev) => [...prev, msg]);
+    } else if (event.type === "buyer_report") {
+      const msg = createChatMessage(Sender.MODEL, event.text, {
+        agentSender: AgentSender.BUYER_AGENT,
+        turn: event.turn,
+      });
+      setMessages((prev) => [...prev, msg]);
     } else if (event.type === "error") {
       const msg = createChatMessage(Sender.MODEL, `Error: ${event.text}`, {
         agentSender: AgentSender.SYSTEM,
