@@ -1,129 +1,78 @@
 # UCP Shopping App
 
-A standalone Flutter shopping app that communicates with UCP business agents via the A2A (Agent-to-Agent) JSON-RPC protocol.
-
-## Overview
-
-This app is a UCP client reference implementation — a visual e-commerce frontend that talks directly to any A2A-compatible business agent using the UCP extension for structured commerce data.
-
-### Features
-
-- **Product catalog** — browse and search products from the business agent
-- **Cart management** — add, remove, update quantities
-- **Checkout flow** — customer details, shipping address, payment
-- **Order confirmation** — completed order with order ID
-
-### Architecture
-
-```
-┌──────────────────────────────┐
-│  Flutter Shopping App        │
-│                              │
-│  Catalog → Cart → Checkout   │
-│                              │
-│  ┌────────────────────────┐  │
-│  │  Dart A2A Client       │  │
-│  │  (JSON-RPC + UCP)      │  │
-│  └──────────┬─────────────┘  │
-└─────────────┼────────────────┘
-              │ A2A JSON-RPC + UCP-Agent header
-              ▼
-   ┌─────────────────────┐
-   │ Business Agent      │
-   │ (e.g. SuperStore)   │
-   │ localhost:10999      │
-   └─────────────────────┘
-```
-
-## Prerequisites
-
-- Flutter 3.x
-- A running UCP A2A business agent (e.g. the SuperStore agent)
+A standalone Flutter shopping app that communicates with UCP business agents via the A2A (Agent-to-Agent) JSON-RPC protocol. Chat-first experience matching the React UCP chat-client.
 
 ## Quick Start
 
-### 1. Start the business agent
+You need **3 terminals**:
+
+### Terminal 1: Start the business agent
 
 ```bash
-cd ../business_agent
+cd a2a/business_agent
 uv sync
-uv run business_agent  # Starts on port 10999
+uv run business_agent
+# Running on http://localhost:10999
 ```
 
-### 2. Serve the buyer profile
-
-The app needs its UCP buyer profile served at a URL. From the shopping-app directory:
+### Terminal 2: Start the CORS proxy
 
 ```bash
-cd a2a/shopping-app/assets
-python3 -m http.server 3100
-# Profile available at http://localhost:3100/buyer_profile.json
+cd a2a/shopping-app
+python3 proxy.py
+# Proxy on http://localhost:8080 → agent on http://localhost:10999
 ```
 
-### 3. Run the shopping app
-
-From the shopping-app directory (in another terminal):
+### Terminal 3: Run the Flutter app
 
 ```bash
 cd a2a/shopping-app
 flutter run -d chrome
 ```
 
-To use a different agent URL or profile URL:
+### Mock mode (no agent needed)
 
 ```bash
-flutter run -d chrome \
-  --dart-define=AGENT_URL=http://localhost:10999 \
-  --dart-define=UCP_PROFILE_URL=http://localhost:3100/buyer_profile.json
+flutter run -d chrome --dart-define=USE_MOCK=true
 ```
+
+## Architecture
+
+```
+Flutter App (chrome)  →  CORS Proxy (:8080)  →  Business Agent (:10999)
+   chat UI               proxy.py               SuperStore (A2A + UCP)
+```
+
+The app sends A2A JSON-RPC `message/send` requests with UCP extension headers.
+The proxy adds CORS headers so the browser allows cross-origin requests.
+
+## Features
+
+- **Chat-first UI** — conversational shopping experience
+- **Inline product cards** — horizontal carousel with images, prices, "Add to Checkout"
+- **Inline checkout cards** — line items, totals, Start/Complete Payment buttons
+- **Real A2A protocol** — JSON-RPC 2.0 with UCP extension
+- **Mock mode** — works without a running agent for development
 
 ## Project Structure
 
 ```
 lib/
   a2a/
-    a2a_client.dart         # A2A JSON-RPC client with UCP extension
+    a2a_client.dart         # A2A JSON-RPC client with UCP headers
+    mock_a2a_client.dart    # Mock client for offline development
   config/
-    app_config.dart         # App configuration (agent URL, profile URL)
+    app_config.dart         # Agent URL, profile URL, mock toggle
   models/
-    product.dart            # Product and ProductResults models
-    checkout.dart           # Checkout, LineItem, Payment, Order models
-    shop_state.dart         # App state (ChangeNotifier + Provider)
-  screens/
-    catalog_screen.dart     # Product search and grid
-    cart_screen.dart        # Cart with quantity controls
-    checkout_form_screen.dart # Customer details form
-    payment_screen.dart     # Payment confirmation
-    confirmation_screen.dart # Order success
+    chat_message.dart       # Chat message with products/checkout
+    checkout.dart           # Checkout, LineItem, Payment, Order
+    product.dart            # Product and ProductResults
+    shop_state.dart         # Chat-first state management
   widgets/
-    product_card.dart       # Product display card
-    cart_item_tile.dart     # Cart line item with controls
-    checkout_summary.dart   # Order totals display
+    chat_bubble.dart        # Message bubbles with inline products/checkout
+    chat_input.dart         # Text input bar
+    chat_view.dart          # Full-screen chat view
+proxy.py                    # CORS proxy for Flutter web → business agent
 assets/
   buyer_profile.json        # UCP buyer capability profile
 ```
-
-## A2A Protocol
-
-The app communicates via JSON-RPC 2.0 `message/send` requests:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "...",
-  "method": "message/send",
-  "params": {
-    "message": {
-      "role": "user",
-      "parts": [{"type": "text", "text": "Search for strawberries"}],
-      "messageId": "...",
-      "contextId": "...",
-      "kind": "message"
-    }
-  }
-}
-```
-
-Headers include:
-- `X-A2A-Extensions`: UCP extension URI
-- `UCP-Agent`: buyer profile URL for capability negotiation
