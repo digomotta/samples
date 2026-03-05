@@ -5,13 +5,11 @@ import '../a2a/mock_a2a_client.dart';
 import '../config/app_config.dart';
 import 'chat_message.dart';
 import 'checkout.dart';
-import 'product.dart';
 
-/// Centralized shopping state — drives the entire app.
+/// Chat-first shopping state — mirrors the React UCP chat-client.
 ///
-/// Supports two modes:
-/// 1. Manual — user clicks buttons directly
-/// 2. Agentic — user chats with the agent, UI updates automatically
+/// The entire shopping experience is conversational: user talks to the agent,
+/// agent responds with text + structured data (products, checkout) inline.
 class ShopState extends ChangeNotifier {
   ShopState({A2AClient? client})
       : _client =
@@ -20,329 +18,143 @@ class ShopState extends ChangeNotifier {
   final A2AClient _client;
 
   // --- State ---
-  List<Product> _products = [];
-  Checkout? _checkout;
-  bool _isLoading = false;
-  String? _error;
-  String _searchQuery = '';
-  ShopView _currentView = ShopView.catalog;
-
-  // --- Chat state ---
   final List<ChatMessage> _messages = [
     ChatMessage.agent(
-      "Hi! I'm your shopping assistant. Tell me what you'd like "
-      "to buy, or ask me to browse the catalog.",
+      'Hello! I am your Shopping Assistant. How can I help you?',
     ),
   ];
-  bool _isChatOpen = false;
+  bool _isLoading = false;
+  Checkout? _lastCheckout;
 
   // --- Getters ---
-  List<Product> get products => _products;
-  Checkout? get checkout => _checkout;
-  bool get isLoading => _isLoading;
-  String? get error => _error;
-  String get searchQuery => _searchQuery;
-  ShopView get currentView => _currentView;
   List<ChatMessage> get messages => List.unmodifiable(_messages);
-  bool get isChatOpen => _isChatOpen;
+  bool get isLoading => _isLoading;
+  Checkout? get lastCheckout => _lastCheckout;
 
-  int get cartItemCount {
-    if (_checkout == null) return 0;
-    return _checkout!.lineItems.fold(0, (sum, li) => sum + li.quantity);
+  /// Index of the last message that contains a checkout (for action buttons).
+  int get lastCheckoutIndex =>
+      _messages.lastIndexWhere((m) => m.hasCheckout);
+
+  // --- Chat actions ---
+
+  /// Send a free-text message to the agent.
+  Future<void> sendMessage(String text) async {
+    if (text.trim().isEmpty || _isLoading) return;
+    _addUserMessage(text);
+    await _callAgent(text);
   }
 
-  // --- Chat ---
-
-  void toggleChat() {
-    _isChatOpen = !_isChatOpen;
-    notifyListeners();
+  /// User tapped "Add to Checkout" on a product card.
+  Future<void> addToCheckout(String productId) async {
+    if (_isLoading) return;
+    _addUserMessage('Add to checkout', isUserAction: true);
+    await _callAgentRaw(() => _client.addToCheckout(productId));
   }
 
-  void openChat() {
-    _isChatOpen = true;
-    notifyListeners();
+  /// User tapped "Start Payment" on a checkout card.
+  Future<void> startPayment() async {
+    if (_isLoading) return;
+    _addUserMessage('Start payment', isUserAction: true);
+    await _callAgentRaw(() => _client.startPayment());
   }
 
-  void closeChat() {
-    _isChatOpen = false;
-    notifyListeners();
+  /// User tapped "Complete Payment" on a ready checkout.
+  Future<void> completePayment() async {
+    if (_isLoading) return;
+    _addUserMessage('Confirm purchase', isUserAction: true);
+    final paymentInstrument = {
+      'id': 'mock_card_001',
+      'type': 'card',
+      'brand': 'visa',
+      'last_digits': '4242',
+      'expiry_month': 12,
+      'expiry_year': 2028,
+      'handler_id': 'example_payment_provider',
+      'handler_name': 'example.payment.provider',
+      'credential': {
+        'type': 'payment_token',
+        'token': 'tok_mock_${DateTime.now().millisecondsSinceEpoch}',
+      },
+    };
+    await _callAgentRaw(() => _client.completeCheckout(paymentInstrument));
   }
 
-  /// Send a user message to the agent and process the response.
-  /// This is the core agentic flow — the agent's response drives the UI.
-  Future<void> sendChatMessage(String text) async {
-    if (text.trim().isEmpty) return;
-
-    // Add user message.
-    _messages.add(ChatMessage.user(text));
-    _messages.add(ChatMessage.loading());
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      final response = await _client.sendMessage(text);
-
-      // Remove loading indicator.
-      _messages.removeWhere((m) => m.isLoading);
-
-      // Process structured data from the response.
-      _processAgentResponse(response, text);
-
-      // Add agent text response.
-      final agentText = _buildAgentReply(response);
-      if (agentText.isNotEmpty) {
-        _messages.add(ChatMessage.agent(agentText));
-      }
-    } on A2AException catch (e) {
-      _messages.removeWhere((m) => m.isLoading);
-      _messages.add(ChatMessage.agent('Sorry, something went wrong: ${e.message}'));
-      _error = e.message;
-    } catch (e) {
-      _messages.removeWhere((m) => m.isLoading);
-      _messages.add(ChatMessage.agent('Sorry, something went wrong.'));
-      _error = 'Something went wrong: $e';
-    } finally {
-      _isLoading = false;
-      notifyListeners();
-    }
-  }
-
-  /// Process the agent response and update the UI state accordingly.
-  void _processAgentResponse(A2AResponse response, String userQuery) {
-    // Products → show catalog.
-    if (response.hasProducts) {
-      _products = response.products!.results;
-      _currentView = ShopView.catalog;
-    }
-
-    // Checkout → navigate to the right screen based on status.
-    if (response.hasCheckout) {
-      _checkout = response.checkout;
-      if (_checkout!.isCompleted) {
-        _currentView = ShopView.confirmation;
-      } else if (_checkout!.isReadyForComplete) {
-        _currentView = ShopView.payment;
-      } else if (_checkout!.lineItems.isNotEmpty) {
-        _currentView = ShopView.cart;
-      }
-    }
-  }
-
-  /// Build a human-readable agent reply from the response.
-  String _buildAgentReply(A2AResponse response) {
-    final parts = <String>[];
-
-    // Text from agent.
-    if (response.text != null && response.text!.isNotEmpty) {
-      parts.add(response.text!);
-    }
-
-    // Product results summary.
-    if (response.hasProducts) {
-      final count = response.products!.results.length;
-      if (parts.isEmpty) {
-        parts.add('I found $count product${count != 1 ? 's' : ''} for you.');
-      }
-    }
-
-    // Checkout status updates.
-    if (response.hasCheckout) {
-      final co = response.checkout!;
-      if (co.isCompleted && co.order != null) {
-        parts.add(
-          '🎉 Order confirmed! Your order ID is ${co.order!.id}.',
-        );
-      } else if (co.isReadyForComplete) {
-        parts.add(
-          '✅ Your order is ready! Total: ${co.grandTotal?.displayAmount ?? 'N/A'}. '
-          'Tap "Confirm Purchase" to complete.',
-        );
-      } else if (co.lineItems.isNotEmpty) {
-        final itemCount =
-            co.lineItems.fold<int>(0, (sum, li) => sum + li.quantity);
-        parts.add(
-          '🛒 Cart updated: $itemCount item${itemCount != 1 ? 's' : ''}. '
-          'Total: ${co.grandTotal?.displayAmount ?? 'N/A'}.',
-        );
-      }
-    }
-
-    if (parts.isEmpty) {
-      parts.add("I'm here to help! Try asking me to search for something.");
-    }
-
-    return parts.join('\n\n');
-  }
-
-  // --- Navigation ---
-  void showCatalog() {
-    _currentView = ShopView.catalog;
-    notifyListeners();
-  }
-
-  void showCart() {
-    _currentView = ShopView.cart;
-    notifyListeners();
-  }
-
-  void showCheckoutForm() {
-    _currentView = ShopView.checkoutForm;
-    notifyListeners();
-  }
-
-  void showConfirmation() {
-    _currentView = ShopView.confirmation;
-    notifyListeners();
-  }
-
-  // --- Manual actions (still available for direct UI interaction) ---
-
-  Future<void> browseCatalog() async {
-    await _run(() async {
-      final response = await _client.browseCatalog();
-      if (response.hasProducts) {
-        _products = response.products!.results;
-      }
-    });
-  }
-
-  Future<void> searchProducts(String query) async {
-    _searchQuery = query;
-    await _run(() async {
-      final response = await _client.searchProducts(query);
-      if (response.hasProducts) {
-        _products = response.products!.results;
-      } else {
-        _products = [];
-      }
-    });
-  }
-
-  Future<void> addToCheckout(String productId, {int quantity = 1}) async {
-    await _run(() async {
-      final response = await _client.addToCheckout(
-        productId,
-        quantity: quantity,
-      );
-      if (response.hasCheckout) {
-        _checkout = response.checkout;
-      }
-    });
-  }
-
-  Future<void> removeFromCheckout(String productId) async {
-    await _run(() async {
-      final response = await _client.removeFromCheckout(productId);
-      if (response.hasCheckout) {
-        _checkout = response.checkout;
-      }
-    });
-  }
-
-  Future<void> updateQuantity(String productId, int quantity) async {
-    await _run(() async {
-      final response = await _client.updateCheckout(productId, quantity);
-      if (response.hasCheckout) {
-        _checkout = response.checkout;
-      }
-    });
-  }
-
-  Future<void> updateCustomerDetails({
-    required String firstName,
-    required String lastName,
-    required String email,
-    required String streetAddress,
-    required String city,
-    required String state,
-    required String postalCode,
-  }) async {
-    await _run(() async {
-      final response = await _client.updateCustomerDetails(
-        firstName: firstName,
-        lastName: lastName,
-        email: email,
-        streetAddress: streetAddress,
-        city: city,
-        state: state,
-        postalCode: postalCode,
-      );
-      if (response.hasCheckout) {
-        _checkout = response.checkout;
-        if (_checkout!.isReadyForComplete) {
-          _currentView = ShopView.payment;
-        }
-      }
-    });
-  }
-
-  Future<void> completeCheckout() async {
-    await _run(() async {
-      final paymentInstrument = {
-        'id': 'mock_card_001',
-        'type': 'card',
-        'brand': 'visa',
-        'last_digits': '4242',
-        'expiry_month': 12,
-        'expiry_year': 2028,
-        'handler_id': 'example_payment_provider',
-        'handler_name': 'example.payment.provider',
-        'credential': {
-          'type': 'payment_token',
-          'token': 'tok_mock_demo_${DateTime.now().millisecondsSinceEpoch}',
-        },
-      };
-      final response = await _client.completeCheckout(paymentInstrument);
-      if (response.hasCheckout) {
-        _checkout = response.checkout;
-        if (_checkout!.isCompleted) {
-          _currentView = ShopView.confirmation;
-        }
-      }
-    });
-  }
-
-  /// Start a new shopping session.
+  /// Reset and start over.
   void newSession() {
     _client.resetSession();
-    _products = [];
-    _checkout = null;
-    _error = null;
-    _searchQuery = '';
-    _currentView = ShopView.catalog;
     _messages.clear();
     _messages.add(ChatMessage.agent(
-      "Hi! I'm your shopping assistant. What would you like to buy?",
+      'Hello! I am your Shopping Assistant. How can I help you?',
     ));
+    _lastCheckout = null;
+    _isLoading = false;
     notifyListeners();
-    browseCatalog();
   }
 
   // --- Internal ---
 
-  Future<void> _run(Future<void> Function() action) async {
+  void _addUserMessage(String text, {bool isUserAction = false}) {
+    _messages.add(ChatMessage.user(text, isUserAction: isUserAction));
+    _messages.add(ChatMessage.loading());
     _isLoading = true;
-    _error = null;
     notifyListeners();
+  }
+
+  /// Call agent with a text message.
+  Future<void> _callAgent(String text) async {
     try {
-      await action();
-    } on A2AException catch (e) {
-      _error = e.message;
+      final response = await _client.sendMessage(text);
+      _handleResponse(response);
     } catch (e) {
-      _error = 'Something went wrong: $e';
-    } finally {
-      _isLoading = false;
-      notifyListeners();
+      _handleError(e);
     }
   }
-}
 
-/// The current view/screen of the shopping flow.
-enum ShopView {
-  catalog,
-  cart,
-  checkoutForm,
-  payment,
-  confirmation,
+  /// Call agent with a raw A2A method.
+  Future<void> _callAgentRaw(Future<A2AResponse> Function() call) async {
+    try {
+      final response = await call();
+      _handleResponse(response);
+    } catch (e) {
+      _handleError(e);
+    }
+  }
+
+  void _handleResponse(A2AResponse response) {
+    _messages.removeWhere((m) => m.isLoading);
+
+    if (response.hasCheckout) {
+      _lastCheckout = response.checkout;
+    }
+
+    final hasContent = (response.text != null && response.text!.isNotEmpty) ||
+        response.hasProducts ||
+        response.hasCheckout;
+
+    if (hasContent) {
+      _messages.add(ChatMessage.agent(
+        response.text ?? '',
+        products: response.products?.results,
+        checkout: response.checkout,
+      ));
+    } else {
+      _messages.add(ChatMessage.agent(
+        "I'm not sure how to help with that. "
+        "Try asking me to search for products or browse the catalog.",
+      ));
+    }
+
+    _isLoading = false;
+    notifyListeners();
+  }
+
+  void _handleError(Object e) {
+    _messages.removeWhere((m) => m.isLoading);
+    final msg = e is A2AException
+        ? 'Sorry, something went wrong: ${e.message}'
+        : 'Sorry, something went wrong. Please try again.';
+    _messages.add(ChatMessage.agent(msg));
+    _isLoading = false;
+    notifyListeners();
+  }
 }
