@@ -3,13 +3,19 @@ import 'package:flutter/foundation.dart';
 import '../a2a/a2a_client.dart';
 import '../a2a/mock_a2a_client.dart';
 import '../config/app_config.dart';
+import 'chat_message.dart';
 import 'checkout.dart';
 import 'product.dart';
 
 /// Centralized shopping state — drives the entire app.
+///
+/// Supports two modes:
+/// 1. Manual — user clicks buttons directly
+/// 2. Agentic — user chats with the agent, UI updates automatically
 class ShopState extends ChangeNotifier {
   ShopState({A2AClient? client})
-      : _client = client ?? (AppConfig.useMock ? MockA2AClient() : A2AClient());
+      : _client =
+            client ?? (AppConfig.useMock ? MockA2AClient() : A2AClient());
 
   final A2AClient _client;
 
@@ -21,6 +27,15 @@ class ShopState extends ChangeNotifier {
   String _searchQuery = '';
   ShopView _currentView = ShopView.catalog;
 
+  // --- Chat state ---
+  final List<ChatMessage> _messages = [
+    ChatMessage.agent(
+      "Hi! I'm your shopping assistant. Tell me what you'd like "
+      "to buy, or ask me to browse the catalog.",
+    ),
+  ];
+  bool _isChatOpen = false;
+
   // --- Getters ---
   List<Product> get products => _products;
   Checkout? get checkout => _checkout;
@@ -28,10 +43,136 @@ class ShopState extends ChangeNotifier {
   String? get error => _error;
   String get searchQuery => _searchQuery;
   ShopView get currentView => _currentView;
+  List<ChatMessage> get messages => List.unmodifiable(_messages);
+  bool get isChatOpen => _isChatOpen;
 
   int get cartItemCount {
     if (_checkout == null) return 0;
     return _checkout!.lineItems.fold(0, (sum, li) => sum + li.quantity);
+  }
+
+  // --- Chat ---
+
+  void toggleChat() {
+    _isChatOpen = !_isChatOpen;
+    notifyListeners();
+  }
+
+  void openChat() {
+    _isChatOpen = true;
+    notifyListeners();
+  }
+
+  void closeChat() {
+    _isChatOpen = false;
+    notifyListeners();
+  }
+
+  /// Send a user message to the agent and process the response.
+  /// This is the core agentic flow — the agent's response drives the UI.
+  Future<void> sendChatMessage(String text) async {
+    if (text.trim().isEmpty) return;
+
+    // Add user message.
+    _messages.add(ChatMessage.user(text));
+    _messages.add(ChatMessage.loading());
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final response = await _client.sendMessage(text);
+
+      // Remove loading indicator.
+      _messages.removeWhere((m) => m.isLoading);
+
+      // Process structured data from the response.
+      _processAgentResponse(response, text);
+
+      // Add agent text response.
+      final agentText = _buildAgentReply(response);
+      if (agentText.isNotEmpty) {
+        _messages.add(ChatMessage.agent(agentText));
+      }
+    } on A2AException catch (e) {
+      _messages.removeWhere((m) => m.isLoading);
+      _messages.add(ChatMessage.agent('Sorry, something went wrong: ${e.message}'));
+      _error = e.message;
+    } catch (e) {
+      _messages.removeWhere((m) => m.isLoading);
+      _messages.add(ChatMessage.agent('Sorry, something went wrong.'));
+      _error = 'Something went wrong: $e';
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Process the agent response and update the UI state accordingly.
+  void _processAgentResponse(A2AResponse response, String userQuery) {
+    // Products → show catalog.
+    if (response.hasProducts) {
+      _products = response.products!.results;
+      _currentView = ShopView.catalog;
+    }
+
+    // Checkout → navigate to the right screen based on status.
+    if (response.hasCheckout) {
+      _checkout = response.checkout;
+      if (_checkout!.isCompleted) {
+        _currentView = ShopView.confirmation;
+      } else if (_checkout!.isReadyForComplete) {
+        _currentView = ShopView.payment;
+      } else if (_checkout!.lineItems.isNotEmpty) {
+        _currentView = ShopView.cart;
+      }
+    }
+  }
+
+  /// Build a human-readable agent reply from the response.
+  String _buildAgentReply(A2AResponse response) {
+    final parts = <String>[];
+
+    // Text from agent.
+    if (response.text != null && response.text!.isNotEmpty) {
+      parts.add(response.text!);
+    }
+
+    // Product results summary.
+    if (response.hasProducts) {
+      final count = response.products!.results.length;
+      if (parts.isEmpty) {
+        parts.add('I found $count product${count != 1 ? 's' : ''} for you.');
+      }
+    }
+
+    // Checkout status updates.
+    if (response.hasCheckout) {
+      final co = response.checkout!;
+      if (co.isCompleted && co.order != null) {
+        parts.add(
+          '🎉 Order confirmed! Your order ID is ${co.order!.id}.',
+        );
+      } else if (co.isReadyForComplete) {
+        parts.add(
+          '✅ Your order is ready! Total: ${co.grandTotal?.displayAmount ?? 'N/A'}. '
+          'Tap "Confirm Purchase" to complete.',
+        );
+      } else if (co.lineItems.isNotEmpty) {
+        final itemCount =
+            co.lineItems.fold<int>(0, (sum, li) => sum + li.quantity);
+        parts.add(
+          '🛒 Cart updated: $itemCount item${itemCount != 1 ? 's' : ''}. '
+          'Total: ${co.grandTotal?.displayAmount ?? 'N/A'}.',
+        );
+      }
+    }
+
+    if (parts.isEmpty) {
+      parts.add("I'm here to help! Try asking me to search for something.");
+    }
+
+    return parts.join('\n\n');
   }
 
   // --- Navigation ---
@@ -55,7 +196,7 @@ class ShopState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- Actions ---
+  // --- Manual actions (still available for direct UI interaction) ---
 
   Future<void> browseCatalog() async {
     await _run(() async {
@@ -138,7 +279,6 @@ class ShopState extends ChangeNotifier {
 
   Future<void> completeCheckout() async {
     await _run(() async {
-      // Mock payment instrument for demo.
       final paymentInstrument = {
         'id': 'mock_card_001',
         'type': 'card',
@@ -171,6 +311,10 @@ class ShopState extends ChangeNotifier {
     _error = null;
     _searchQuery = '';
     _currentView = ShopView.catalog;
+    _messages.clear();
+    _messages.add(ChatMessage.agent(
+      "Hi! I'm your shopping assistant. What would you like to buy?",
+    ));
     notifyListeners();
     browseCatalog();
   }

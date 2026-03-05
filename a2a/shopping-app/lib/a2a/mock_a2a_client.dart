@@ -85,16 +85,99 @@ class MockA2AClient extends A2AClient {
 
   @override
   Future<A2AResponse> sendMessage(String text) async {
-    // Route text messages to the appropriate action.
     final lower = text.toLowerCase();
-    if (lower.contains('all available') || lower.contains('browse')) {
+
+    // Browse / show all.
+    if (lower.contains('all') ||
+        lower.contains('browse') ||
+        lower.contains('catalog') ||
+        lower.contains('show me') && lower.contains('product')) {
       return browseCatalog();
     }
-    if (lower.contains('search for')) {
-      final query = lower.replaceFirst('search for ', '');
-      return searchProducts(query);
+
+    // Show cart.
+    if (lower.contains('cart') || lower.contains('checkout')) {
+      if (_cart.isEmpty) {
+        await _simulateDelay();
+        return A2AResponse(
+          text: 'Your cart is empty. Try adding some products first!',
+          raw: {},
+        );
+      }
+      return getCheckout();
     }
-    return browseCatalog();
+
+    // Complete purchase.
+    if (lower.contains('complete') ||
+        lower.contains('confirm') ||
+        lower.contains('pay')) {
+      if (_status == 'ready_for_complete') {
+        return completeCheckout({
+          'id': 'mock_card',
+          'type': 'card',
+          'credential': {'type': 'token', 'token': 'mock'},
+        });
+      }
+      if (_cart.isNotEmpty) {
+        // Auto-fill customer details and go to payment.
+        return updateCustomerDetails(
+          firstName: 'John',
+          lastName: 'Doe',
+          email: 'john@example.com',
+          streetAddress: '123 Main St',
+          city: 'San Francisco',
+          state: 'CA',
+          postalCode: '94105',
+        );
+      }
+      await _simulateDelay();
+      return A2AResponse(
+        text: 'Nothing to purchase yet. Add some items first!',
+        raw: {},
+      );
+    }
+
+    // Add to cart — match product by name.
+    if (lower.contains('add') ||
+        lower.contains('buy') ||
+        lower.contains('want') ||
+        lower.contains('get me')) {
+      final product = _matchProduct(lower);
+      if (product != null) {
+        return addToCheckout(product.productId);
+      }
+      // Couldn't match — search instead.
+      return searchProducts(text);
+    }
+
+    // Remove from cart.
+    if (lower.contains('remove') || lower.contains('delete')) {
+      final product = _matchProduct(lower);
+      if (product != null) {
+        return removeFromCheckout(product.productId);
+      }
+      await _simulateDelay();
+      return A2AResponse(
+        text: "I couldn't find that item to remove.",
+        raw: {},
+      );
+    }
+
+    // Default: try search.
+    return searchProducts(text);
+  }
+
+  /// Try to match a product from the catalog by keywords in the text.
+  Product? _matchProduct(String text) {
+    for (final product in _catalog) {
+      final nameLower = product.name.toLowerCase();
+      // Check if any significant word from the product name is in the text.
+      final words = nameLower.split(' ').where((w) => w.length > 3);
+      for (final word in words) {
+        if (text.contains(word)) return product;
+      }
+    }
+    return null;
   }
 
   @override
