@@ -7,6 +7,7 @@ import 'screens/catalog_screen.dart';
 import 'screens/checkout_form_screen.dart';
 import 'screens/confirmation_screen.dart';
 import 'screens/payment_screen.dart';
+import 'widgets/chat_panel.dart';
 
 void main() {
   runApp(const ShoppingApp());
@@ -46,13 +47,14 @@ class ShoppingApp extends StatelessWidget {
   }
 }
 
-/// App shell with AppBar and view switching driven by [ShopState].
+/// App shell with AppBar, view switching, and agent chat panel.
 class ShoppingShell extends StatelessWidget {
   const ShoppingShell({super.key});
 
   @override
   Widget build(BuildContext context) {
     final shop = context.watch<ShopState>();
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_title(shop.currentView)),
@@ -75,18 +77,47 @@ class ShoppingShell extends StatelessWidget {
           const SizedBox(width: 8),
         ],
       ),
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 200),
-        child: _buildScreen(shop.currentView),
+      body: Stack(
+        children: [
+          // Main content.
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            child: _buildScreen(shop.currentView),
+          ),
+          // Chat panel overlay.
+          if (shop.isChatOpen)
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: shop.closeChat,
+                child: Container(
+                  color: Colors.black.withValues(alpha: 0.3),
+                ),
+              ),
+            ),
+          // Sliding chat panel.
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOutCubic,
+            left: 0,
+            right: 0,
+            bottom: shop.isChatOpen ? 0 : -(MediaQuery.of(context).size.height * 0.7),
+            height: MediaQuery.of(context).size.height * 0.7,
+            child: const ChatPanel(),
+          ),
+        ],
       ),
-      // Floating action button to go back to catalog from cart.
-      floatingActionButton: shop.currentView == ShopView.cart
-          ? FloatingActionButton.extended(
-              onPressed: shop.showCatalog,
-              icon: const Icon(Icons.add),
-              label: const Text('Add More'),
-            )
-          : null,
+      // Agent FAB.
+      floatingActionButton: shop.isChatOpen
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: shop.toggleChat,
+              icon: Badge(
+                label: Text('${shop.messages.length}'),
+                isLabelVisible: shop.messages.length > 1,
+                child: const Icon(Icons.smart_toy),
+              ),
+              label: const Text('Ask Agent'),
+            ),
     );
   }
 
