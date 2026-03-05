@@ -52,17 +52,20 @@ uv run business_agent  # Starts on port 10999
 
 ### 2. Serve the buyer profile
 
-The app needs its UCP buyer profile served at a URL. Quick way:
+The app needs its UCP buyer profile served at a URL. From the shopping-app directory:
 
 ```bash
-cd assets
+cd a2a/shopping-app/assets
 python3 -m http.server 3100
 # Profile available at http://localhost:3100/buyer_profile.json
 ```
 
 ### 3. Run the shopping app
 
+From the shopping-app directory (in another terminal):
+
 ```bash
+cd a2a/shopping-app
 flutter run -d chrome
 ```
 
