@@ -15,12 +15,14 @@
  */
 import { appConfig } from "@/config";
 import {
+  AgentSender,
   type ChatMessage,
   type Checkout,
   type PaymentInstrument,
   type Product,
   Sender,
 } from "../types";
+import BuyerAgentLogo from "./BuyerAgentLogo";
 import CheckoutComponent from "./Checkout";
 import PaymentConfirmationComponent from "./PaymentConfirmation";
 import PaymentMethodSelector from "./PaymentMethodSelector";
@@ -57,6 +59,24 @@ function TypingIndicator() {
   );
 }
 
+function AgentLabel({ agentSender }: { agentSender?: AgentSender }) {
+  if (!agentSender) return null;
+
+  const labels: Record<string, { text: string; color: string }> = {
+    [AgentSender.BUYER_AGENT]: { text: "Buyer Agent", color: "text-indigo-600" },
+    [AgentSender.SELLER_AGENT]: { text: "Seller Agent", color: "text-emerald-600" },
+    [AgentSender.HUMAN]: { text: "Human Override", color: "text-blue-600" },
+    [AgentSender.SYSTEM]: { text: "System", color: "text-gray-500" },
+  };
+
+  const label = labels[agentSender];
+  if (!label) return null;
+
+  return (
+    <span className={`text-xs font-medium ${label.color}`}>{label.text}</span>
+  );
+}
+
 function ChatMessageComponent({
   message,
   onAddToCart,
@@ -72,7 +92,56 @@ function ChatMessageComponent({
     return <TypingIndicator />;
   }
 
-  // User messages are handled separately
+  // System messages (centered, muted)
+  if (message.agentSender === AgentSender.SYSTEM) {
+    return (
+      <div className="w-full my-2 flex justify-center">
+        <div className="px-4 py-2 rounded-full bg-gray-100 text-gray-500 text-sm">
+          {message.text}
+        </div>
+      </div>
+    );
+  }
+
+  // Buyer agent messages (right side, indigo)
+  if (message.agentSender === AgentSender.BUYER_AGENT) {
+    return (
+      <div className="flex w-full my-1 items-start gap-2 justify-end">
+        <div className="max-w-xs md:max-w-md lg:max-w-2xl">
+          <div className="flex justify-end mb-0.5">
+            <AgentLabel agentSender={message.agentSender} />
+          </div>
+          <div className="px-4 py-2 rounded-2xl shadow-sm bg-indigo-500 text-white">
+            <div className="whitespace-pre-wrap break-words">{message.text}</div>
+          </div>
+        </div>
+        <div className="flex-shrink-0 pt-1">
+          <BuyerAgentLogo className="w-8 h-8 text-indigo-500" />
+        </div>
+      </div>
+    );
+  }
+
+  // Human override messages (right side, blue, like regular user)
+  if (message.agentSender === AgentSender.HUMAN) {
+    return (
+      <div className="flex w-full my-1 items-start gap-2 justify-end">
+        <div className="max-w-xs md:max-w-md lg:max-w-2xl">
+          <div className="flex justify-end mb-0.5">
+            <AgentLabel agentSender={message.agentSender} />
+          </div>
+          <div className="px-4 py-2 rounded-2xl shadow-sm bg-blue-500 text-white">
+            <div className="whitespace-pre-wrap break-words">{message.text}</div>
+          </div>
+        </div>
+        <div className="flex-shrink-0 pt-1">
+          <UserLogo className="w-8 h-8 text-blue-400" />
+        </div>
+      </div>
+    );
+  }
+
+  // Regular user messages (right side, blue)
   if (isUser) {
     return (
       <div className="flex w-full my-1 items-start gap-2 justify-end">
@@ -86,6 +155,7 @@ function ChatMessageComponent({
     );
   }
 
+  // Seller / model messages (left side)
   return (
     <div className="w-full my-1 justify-start">
       <div className="flex items-center gap-2 mb-1">
@@ -96,7 +166,12 @@ function ChatMessageComponent({
             className="w-8 h-8"
           />
         </div>
-        <span className="font-semibold text-gray-700">{appConfig.name}</span>
+        <span className="font-semibold text-gray-700">
+          {message.agentSender === AgentSender.SELLER_AGENT ? "Seller Agent" : appConfig.name}
+        </span>
+        {message.agentSender === AgentSender.SELLER_AGENT && (
+          <AgentLabel agentSender={message.agentSender} />
+        )}
       </div>
       <div className="ml-10 flex-grow min-w-0">
         {message.text && (

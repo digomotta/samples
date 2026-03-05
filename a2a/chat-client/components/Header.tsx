@@ -13,19 +13,35 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { appConfig } from "@/config";
+import { AppMode } from "../types";
+import ModeSelector from "./ModeSelector";
 
-function Header() {
+interface HeaderProps {
+  logoUrl: string;
+  title: string;
+  mode: AppMode;
+  onModeChange: (mode: AppMode) => void;
+  isModeChangeDisabled: boolean;
+}
+
+function Header({ logoUrl, title, mode, onModeChange, isModeChangeDisabled }: HeaderProps) {
   return (
     <header className="bg-white shadow-sm p-4 border-b border-gray-200 flex-shrink-0">
-      <h1 className="text-xl font-bold text-gray-800 text-center flex justify-center items-center">
-        <img
-          src={appConfig.logoUrl}
-          alt={appConfig.name}
-          className="h-8 mr-3"
+      <div className="flex justify-between items-center">
+        <h1 className="text-xl font-bold text-gray-800 flex items-center">
+          <img
+            src={logoUrl}
+            alt="Logo"
+            className="h-8 mr-3"
+          />
+          <span>{title}</span>
+        </h1>
+        <ModeSelector
+          mode={mode}
+          onModeChange={onModeChange}
+          disabled={isModeChangeDisabled}
         />
-        <span>{appConfig.titleText}</span>
-      </h1>
+      </div>
     </header>
   );
 }

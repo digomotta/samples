@@ -29,6 +29,12 @@ export default defineConfig(() => {
           rewrite: (path) => path.replace(/^\/api/, ""),
           secure: false,
         },
+        "/buyer-agent": {
+          target: "http://localhost:11000",
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/buyer-agent/, ""),
+          secure: false,
+        },
       },
     },
     plugins: [react()],
