@@ -1,12 +1,15 @@
 import 'package:flutter/foundation.dart';
 
 import '../a2a/a2a_client.dart';
+import '../a2a/mock_a2a_client.dart';
+import '../config/app_config.dart';
 import 'checkout.dart';
 import 'product.dart';
 
 /// Centralized shopping state — drives the entire app.
 class ShopState extends ChangeNotifier {
-  ShopState({A2AClient? client}) : _client = client ?? A2AClient();
+  ShopState({A2AClient? client})
+      : _client = client ?? (AppConfig.useMock ? MockA2AClient() : A2AClient());
 
   final A2AClient _client;
 
